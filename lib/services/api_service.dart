@@ -3,7 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:tramites_app/models/tramite.dart';
 
 class ApiService {
-  static const String _baseUrl = 'http://192.168.0.16:8080';
+  static const String _baseUrl = 'https://api.workflow-tramites.site:8443';
 
   late final Dio _dio;
 
