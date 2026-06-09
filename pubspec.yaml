@@ -55,6 +55,18 @@ dependencies:
   # Almacenamiento seguro del JWT
   flutter_secure_storage: any
 
+  # Módulo Agente Trámites
+  speech_to_text: ^7.4.0      # entrada por voz (STT) — 6.x usa API removida de Flutter
+  flutter_tts: ^4.2.0         # lectura de respuestas (TTS)
+  image_picker: ^1.0.7        # cámara / galería para adjuntos
+  shared_preferences: ^2.2.2  # persistir sesionId del agente
+  uuid: ^4.3.3                # sesionId / clientMessageId
+
+  # Documentos del trámite (kit) + ver/descargar archivos
+  file_picker: ^8.1.2         # elegir archivos de cualquier tipo (PDF, video…)
+  url_launcher: ^6.3.0        # abrir presigned URLs (ver/descargar)
+  http_parser: ^4.0.2         # MediaType (content-type real al subir)
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

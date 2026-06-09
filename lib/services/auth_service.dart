@@ -28,8 +28,8 @@ class AuthResponse {
 }
 
 class AuthService {
-  static const String _baseUrl = 'https://api.workflow-tramites.site:8443';
-
+  // static const String _baseUrl = 'https://api.workflow-tramites.site:8443';
+  static const String _baseUrl = 'http://192.168.0.10:8080';
   late final Dio _dio;
 
   AuthService() {

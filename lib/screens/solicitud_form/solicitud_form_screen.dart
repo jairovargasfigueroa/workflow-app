@@ -1,6 +1,9 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
+import 'package:tramites_app/models/archivo_para_subir.dart';
+import 'package:tramites_app/models/documento_kit.dart';
 import 'package:tramites_app/models/tramite.dart';
 import 'package:tramites_app/providers/tramites_provider.dart';
 
@@ -24,13 +27,18 @@ class _SolicitudFormScreenState extends State<SolicitudFormScreen> {
   final _formKey = GlobalKey<FormState>();
   final Map<String, String> _valores = {};
 
+  /// Archivos del kit elegidos, por nombre de documento. Quedan en disco (path)
+  /// hasta que se crea la solicitud y se suben.
+  final Map<String, ArchivoParaSubir> _archivos = {};
+  String? _errorDocs;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context
-          .read<TramitesProvider>()
-          .loadFormulario(widget.formularioSolicitanteId);
+      final provider = context.read<TramitesProvider>();
+      provider.loadFormulario(widget.formularioSolicitanteId);
+      provider.loadDocumentosKit(widget.tramiteId);
     });
   }
 
@@ -109,6 +117,7 @@ class _SolicitudFormScreenState extends State<SolicitudFormScreen> {
               onChanged: (v) => setState(() => _valores[campo.nombre] = v),
             ),
           ),
+          _buildKit(provider),
           const SizedBox(height: 8),
           if (provider.errorSubmit != null) ...[
             Container(
@@ -129,10 +138,22 @@ class _SolicitudFormScreenState extends State<SolicitudFormScreen> {
           FilledButton(
             onPressed: provider.isSubmitting ? null : _enviar,
             child: provider.isSubmitting
-                ? const SizedBox(
-                    height: 20,
-                    width: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
+                ? Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const SizedBox(
+                        height: 18,
+                        width: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                      const SizedBox(width: 10),
+                      Flexible(
+                        child: Text(
+                          provider.estadoSubida ?? 'Enviando…',
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
                   )
                 : const Text('Enviar solicitud'),
           ),
@@ -142,12 +163,50 @@ class _SolicitudFormScreenState extends State<SolicitudFormScreen> {
     );
   }
 
+  Future<void> _elegirArchivo(DocumentoKit doc) async {
+    final exts = doc.formatosAceptados
+        .map((e) => e.toLowerCase().replaceAll('.', '').trim())
+        .where((e) => RegExp(r'^[a-z0-9]+$').hasMatch(e))
+        .toList();
+
+    final result = await FilePicker.platform.pickFiles(
+      type: exts.isEmpty ? FileType.any : FileType.custom,
+      allowedExtensions: exts.isEmpty ? null : exts,
+    );
+    if (result == null || result.files.isEmpty) return;
+
+    final f = result.files.first;
+    if (f.path == null) return;
+
+    setState(() {
+      _archivos[doc.nombre] = ArchivoParaSubir(
+        campoFormulario: doc.nombre,
+        path: f.path!,
+        nombre: f.name,
+        tamanoBytes: f.size,
+        extension: (f.extension ?? '').toLowerCase(),
+      );
+      _errorDocs = null;
+    });
+  }
+
   Future<void> _enviar() async {
     if (!_formKey.currentState!.validate()) return;
 
     final provider = context.read<TramitesProvider>();
     final formulario = provider.formulario;
     if (formulario == null) return;
+
+    // Validar documentos obligatorios del kit.
+    final faltantes = provider.documentosKit
+        .where((d) => d.obligatorio && !_archivos.containsKey(d.nombre))
+        .map((d) => d.nombre)
+        .toList();
+    if (faltantes.isNotEmpty) {
+      setState(() => _errorDocs = 'Faltan documentos: ${faltantes.join(', ')}');
+      return;
+    }
+    setState(() => _errorDocs = null);
 
     final respuestas = formulario.campos
         .map((c) => {
@@ -156,14 +215,191 @@ class _SolicitudFormScreenState extends State<SolicitudFormScreen> {
             })
         .toList();
 
-    final result = await provider.createSolicitud(
+    final fallidos = await provider.crearSolicitudConKit(
       tramiteId: widget.tramiteId,
       respuestas: respuestas,
+      archivos: _archivos.values.toList(),
     );
 
-    if (result != null && mounted) {
+    if (!mounted) return;
+    if (fallidos != null && fallidos.isEmpty) {
+      // Creada y todo subido.
       context.go('/solicitudes');
+    } else if (fallidos != null && fallidos.isNotEmpty) {
+      // Dejar solo los que fallaron, para reintentar la subida.
+      setState(() => _archivos.removeWhere((k, v) => !fallidos.contains(k)));
     }
+    // fallidos == null → falló la creación (se muestra provider.errorSubmit).
+  }
+
+  /// Sección "Documentos requeridos" (kit del trámite). Por ahora solo muestra
+  /// qué documentos pide; la selección/subida real es el paso siguiente.
+  Widget _buildKit(TramitesProvider provider) {
+    if (provider.isLoadingKit) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 16),
+        child: Center(
+          child: SizedBox(
+            height: 20,
+            width: 20,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+        ),
+      );
+    }
+
+    final kit = provider.documentosKit;
+    if (kit.isEmpty) return const SizedBox.shrink();
+
+    final colorScheme = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 20),
+        Text(
+          'Documentos requeridos',
+          style: Theme.of(context)
+              .textTheme
+              .titleMedium
+              ?.copyWith(fontWeight: FontWeight.w600),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Vas a necesitar subir estos documentos (la subida se habilita en el siguiente paso).',
+          style: Theme.of(context)
+              .textTheme
+              .bodySmall
+              ?.copyWith(color: colorScheme.onSurfaceVariant),
+        ),
+        const SizedBox(height: 12),
+        ...kit.map(
+          (d) => _KitDocumentoTile(
+            documento: d,
+            archivo: _archivos[d.nombre],
+            deshabilitado: provider.isSubmitting,
+            onElegir: () => _elegirArchivo(d),
+            onQuitar: () => setState(() => _archivos.remove(d.nombre)),
+          ),
+        ),
+        if (_errorDocs != null) ...[
+          const SizedBox(height: 8),
+          Text(
+            _errorDocs!,
+            style: TextStyle(color: colorScheme.error, fontSize: 13),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _KitDocumentoTile extends StatelessWidget {
+  final DocumentoKit documento;
+  final ArchivoParaSubir? archivo;
+  final bool deshabilitado;
+  final VoidCallback onElegir;
+  final VoidCallback onQuitar;
+
+  const _KitDocumentoTile({
+    required this.documento,
+    required this.archivo,
+    required this.deshabilitado,
+    required this.onElegir,
+    required this.onQuitar,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final formatos = documento.formatosAceptados.isEmpty
+        ? null
+        : 'Formatos: ${documento.formatosAceptados.join(', ')}';
+    final elegido = archivo != null;
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  elegido ? Icons.check_circle : Icons.description_outlined,
+                  color: elegido ? Colors.green : colorScheme.primary,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        documento.obligatorio
+                            ? '${documento.nombre} *'
+                            : documento.nombre,
+                        style: Theme.of(context)
+                            .textTheme
+                            .titleSmall
+                            ?.copyWith(fontWeight: FontWeight.w600),
+                      ),
+                      if (formatos != null) ...[
+                        const SizedBox(height: 2),
+                        Text(
+                          formatos,
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodySmall
+                              ?.copyWith(color: colorScheme.onSurfaceVariant),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                if (!elegido)
+                  OutlinedButton.icon(
+                    onPressed: deshabilitado ? null : onElegir,
+                    icon: const Icon(Icons.upload_file, size: 18),
+                    label: const Text('Adjuntar'),
+                  ),
+              ],
+            ),
+            if (elegido) ...[
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                decoration: BoxDecoration(
+                  color: colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.insert_drive_file, size: 18),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        archivo!.tamanoLegible.isEmpty
+                            ? archivo!.nombre
+                            : '${archivo!.nombre} · ${archivo!.tamanoLegible}',
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Quitar',
+                      visualDensity: VisualDensity.compact,
+                      icon: const Icon(Icons.close, size: 18),
+                      onPressed: deshabilitado ? null : onQuitar,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
   }
 }
 

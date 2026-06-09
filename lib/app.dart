@@ -3,10 +3,12 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import 'package:tramites_app/config/routes.dart';
 import 'package:tramites_app/config/theme.dart';
+import 'package:tramites_app/providers/agente_tramites_provider.dart';
 import 'package:tramites_app/providers/auth_provider.dart';
 import 'package:tramites_app/providers/notification_provider.dart';
 import 'package:tramites_app/providers/solicitudes_provider.dart';
 import 'package:tramites_app/providers/tramites_provider.dart';
+import 'package:tramites_app/services/agente_tramites_service.dart';
 import 'package:tramites_app/services/api_service.dart';
 import 'package:tramites_app/services/auth_service.dart';
 
@@ -72,6 +74,10 @@ class _AppState extends State<App> {
         ChangeNotifierProvider.value(value: _notifProvider),
         ChangeNotifierProvider(create: (_) => TramitesProvider(_apiService)),
         ChangeNotifierProvider(create: (_) => SolicitudesProvider(_apiService)),
+        ChangeNotifierProvider(
+          create: (_) =>
+              AgenteTramitesProvider(AgenteTramitesService(_apiService)),
+        ),
       ],
       child: MaterialApp.router(
         title: 'Trámites App',

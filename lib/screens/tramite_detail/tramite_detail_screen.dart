@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:tramites_app/models/archivo_response.dart';
 import 'package:tramites_app/models/tramite.dart';
 import 'package:tramites_app/providers/solicitudes_provider.dart';
 import 'package:tramites_app/widgets/status_badge.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class TramiteDetailScreen extends StatefulWidget {
   final String id;
@@ -18,7 +20,9 @@ class _TramiteDetailScreenState extends State<TramiteDetailScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<SolicitudesProvider>().loadSolicitud(widget.id);
+      final provider = context.read<SolicitudesProvider>();
+      provider.loadSolicitud(widget.id);
+      provider.loadArchivos(widget.id);
     });
   }
 
@@ -84,6 +88,7 @@ class _TramiteDetailScreenState extends State<TramiteDetailScreen> {
               respuestas: solicitud.respuestasSolicitante,
             ),
           ],
+          _buildArchivos(provider),
           if (solicitud.respuestasPorDepartamento.isNotEmpty) ...[
             const SizedBox(height: 24),
             Text(
@@ -98,6 +103,168 @@ class _TramiteDetailScreenState extends State<TramiteDetailScreen> {
         ],
       ),
     );
+  }
+
+  /// Sección "Documentos" de la solicitud (módulo documental, con permisos).
+  Widget _buildArchivos(SolicitudesProvider provider) {
+    if (provider.isLoadingArchivos) {
+      return const Padding(
+        padding: EdgeInsets.only(top: 24),
+        child: Center(
+          child: SizedBox(
+            height: 20,
+            width: 20,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+        ),
+      );
+    }
+
+    final archivos = provider.archivos;
+    // Sin archivos y sin error → no mostramos nada (no hay docs o no hay permiso).
+    if (archivos.isEmpty && provider.errorArchivos == null) {
+      return const SizedBox.shrink();
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 24),
+        Text('Documentos', style: Theme.of(context).textTheme.titleLarge),
+        const SizedBox(height: 12),
+        if (provider.errorArchivos != null)
+          Text(
+            provider.errorArchivos!,
+            style: TextStyle(color: Theme.of(context).colorScheme.error),
+          )
+        else
+          ...archivos.map((a) => _ArchivoTile(
+                archivo: a,
+                onVer: () => _abrirArchivo(a, attachment: false),
+                onDescargar: () => _abrirArchivo(a, attachment: true),
+              )),
+      ],
+    );
+  }
+
+  Future<void> _abrirArchivo(
+    ArchivoResponse archivo, {
+    required bool attachment,
+  }) async {
+    final provider = context.read<SolicitudesProvider>();
+    try {
+      final url = await provider.obtenerUrlDescarga(
+        archivo.id,
+        attachment: attachment,
+      );
+      final abierto = await launchUrl(
+        Uri.parse(url),
+        mode: LaunchMode.externalApplication,
+      );
+      if (!abierto && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No se pudo abrir el archivo.')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
+        );
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Documentos (archivos de la solicitud)
+// ---------------------------------------------------------------------------
+
+class _ArchivoTile extends StatelessWidget {
+  final ArchivoResponse archivo;
+  final VoidCallback onVer;
+  final VoidCallback onDescargar;
+
+  const _ArchivoTile({
+    required this.archivo,
+    required this.onVer,
+    required this.onDescargar,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final detalle = [
+      if (archivo.campoFormularioOrigen != null &&
+          archivo.campoFormularioOrigen!.isNotEmpty)
+        archivo.campoFormularioOrigen!,
+      if (archivo.tamanoLegible.isNotEmpty) archivo.tamanoLegible,
+    ].join(' · ');
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          children: [
+            Icon(_iconoFormato(archivo.formato), color: colorScheme.primary),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    archivo.nombre,
+                    style: Theme.of(context)
+                        .textTheme
+                        .titleSmall
+                        ?.copyWith(fontWeight: FontWeight.w600),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  if (detalle.isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      detalle,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            IconButton(
+              tooltip: 'Ver',
+              icon: const Icon(Icons.visibility_outlined),
+              onPressed: onVer,
+            ),
+            IconButton(
+              tooltip: 'Descargar',
+              icon: const Icon(Icons.download_outlined),
+              onPressed: onDescargar,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  IconData _iconoFormato(String? formato) {
+    switch (formato?.toLowerCase()) {
+      case 'pdf':
+        return Icons.picture_as_pdf_outlined;
+      case 'jpg':
+      case 'jpeg':
+      case 'png':
+      case 'webp':
+      case 'gif':
+        return Icons.image_outlined;
+      case 'mp4':
+      case 'mov':
+        return Icons.videocam_outlined;
+      default:
+        return Icons.insert_drive_file_outlined;
+    }
   }
 }
 
