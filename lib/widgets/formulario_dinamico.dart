@@ -1,18 +1,20 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:tramites_app/models/archivo_para_subir.dart';
 import 'package:tramites_app/models/contenido_interactivo.dart';
 import 'package:tramites_app/models/mensaje_chat.dart';
 
 /// Renderiza un formulario completo a partir de los campos que mandó el agente
-/// (evento `pedir_campos_multiples`) y, al confirmar, entrega los datos.
+/// (evento `pedir_campos_multiples`) y, al confirmar, entrega datos + archivos.
 ///
-/// [onEnviar] recibe (datos, archivosListos). En Fase 2 los campos FILE se
-/// muestran pero la selección/subida real es Fase 4, así que no se exigen.
+/// [onEnviar] recibe (datos, archivos). Los campos FILE se eligen acá y se
+/// suben después, cuando el agente manda el evento `subir_archivos`.
 class FormularioDinamico extends StatefulWidget {
   final MensajeChat mensaje;
   final void Function(
     Map<String, String> datos,
-    List<Map<String, dynamic>> archivosListos,
+    List<ArchivoParaSubir> archivos,
   ) onEnviar;
 
   const FormularioDinamico({
@@ -30,6 +32,9 @@ class _FormularioDinamicoState extends State<FormularioDinamico> {
 
   /// Valores de campos no-texto (select, date, checkbox).
   final Map<String, String> _valores = {};
+
+  /// Archivos elegidos para campos FILE (por nombre de campo).
+  final Map<String, ArchivoParaSubir> _archivos = {};
 
   /// Errores de validación local (además de los que manda el server).
   final Map<String, String?> _erroresLocales = {};
@@ -67,11 +72,20 @@ class _FormularioDinamicoState extends State<FormularioDinamico> {
   void _confirmar() {
     _erroresLocales.clear();
     final datos = <String, String>{};
+    final archivos = <ArchivoParaSubir>[];
     var hayError = false;
 
     for (final campo in widget.mensaje.campos) {
-      // Los FILE se manejan en Fase 4: no se exigen ni se incluyen todavía.
-      if (campo.tipo == TipoCampoDinamico.file) continue;
+      if (campo.tipo == TipoCampoDinamico.file) {
+        final archivo = _archivos[campo.nombre];
+        if (campo.requerido && archivo == null) {
+          _erroresLocales[campo.nombre] = 'Adjuntá este documento';
+          hayError = true;
+        } else if (archivo != null) {
+          archivos.add(archivo);
+        }
+        continue;
+      }
 
       final valor = _valorDe(campo);
       if (campo.requerido && valor.isEmpty) {
@@ -87,8 +101,7 @@ class _FormularioDinamicoState extends State<FormularioDinamico> {
       return;
     }
 
-    // Fase 2: sin archivos (Fase 4 los agrega).
-    widget.onEnviar(datos, const []);
+    widget.onEnviar(datos, archivos);
   }
 
   @override
@@ -170,7 +183,7 @@ class _FormularioDinamicoState extends State<FormularioDinamico> {
       case TipoCampoDinamico.date:
         return _dateField(campo, etiqueta, error, deshabilitado);
       case TipoCampoDinamico.file:
-        return _fileFieldPlaceholder(campo, etiqueta);
+        return _fileField(campo, etiqueta, error, deshabilitado);
       case TipoCampoDinamico.desconocido:
         return _textField(campo, etiqueta, error, deshabilitado);
     }
@@ -195,7 +208,6 @@ class _FormularioDinamicoState extends State<FormularioDinamico> {
       decoration: InputDecoration(
         labelText: etiqueta,
         errorText: error,
-        border: const OutlineInputBorder(),
         isDense: true,
       ),
     );
@@ -213,7 +225,6 @@ class _FormularioDinamicoState extends State<FormularioDinamico> {
       decoration: InputDecoration(
         labelText: etiqueta,
         errorText: error,
-        border: const OutlineInputBorder(),
         isDense: true,
       ),
       items: [
@@ -257,7 +268,6 @@ class _FormularioDinamicoState extends State<FormularioDinamico> {
         decoration: InputDecoration(
           labelText: etiqueta,
           errorText: error,
-          border: const OutlineInputBorder(),
           isDense: true,
           suffixIcon: const Icon(Icons.calendar_today, size: 18),
         ),
@@ -266,42 +276,129 @@ class _FormularioDinamicoState extends State<FormularioDinamico> {
     );
   }
 
-  /// Campo FILE: visible pero pendiente (la selección/subida es Fase 4).
-  Widget _fileFieldPlaceholder(CampoDinamico campo, String etiqueta) {
+  /// Campo FILE funcional: elige un archivo (foto/PDF/…) y lo retiene hasta
+  /// que el agente pida subirlo (evento `subir_archivos`).
+  Widget _fileField(
+    CampoDinamico campo,
+    String etiqueta,
+    String? error,
+    bool deshabilitado,
+  ) {
     final colorScheme = Theme.of(context).colorScheme;
+    final archivo = _archivos[campo.nombre];
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
           etiqueta,
-          style: TextStyle(color: colorScheme.onSurfaceVariant, fontSize: 13),
-        ),
-        const SizedBox(height: 6),
-        Row(
-          children: [
-            OutlinedButton.icon(
-              onPressed: null,
-              icon: const Icon(Icons.photo_camera_outlined, size: 18),
-              label: const Text('Cámara'),
-            ),
-            const SizedBox(width: 8),
-            OutlinedButton.icon(
-              onPressed: null,
-              icon: const Icon(Icons.attach_file, size: 18),
-              label: const Text('Archivo'),
-            ),
-          ],
-        ),
-        const SizedBox(height: 4),
-        Text(
-          'La subida de archivos se habilita en la Fase 4.',
           style: TextStyle(
-            color: colorScheme.onSurfaceVariant,
-            fontSize: 12,
-            fontStyle: FontStyle.italic,
+            color: error != null
+                ? colorScheme.error
+                : colorScheme.onSurfaceVariant,
+            fontSize: 13,
           ),
         ),
+        const SizedBox(height: 6),
+        if (archivo == null)
+          OutlinedButton.icon(
+            onPressed: deshabilitado ? null : () => _elegirArchivo(campo),
+            icon: const Icon(Icons.upload_file, size: 18),
+            label: const Text('Adjuntar'),
+          )
+        else
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            decoration: BoxDecoration(
+              color: colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.insert_drive_file, size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    archivo.tamanoLegible.isEmpty
+                        ? archivo.nombre
+                        : '${archivo.nombre} · ${archivo.tamanoLegible}',
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 13),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Quitar',
+                  visualDensity: VisualDensity.compact,
+                  icon: const Icon(Icons.close, size: 18),
+                  onPressed: deshabilitado
+                      ? null
+                      : () => setState(() => _archivos.remove(campo.nombre)),
+                ),
+              ],
+            ),
+          ),
+        if (error != null) ...[
+          const SizedBox(height: 4),
+          Text(
+            error,
+            style: TextStyle(color: colorScheme.error, fontSize: 12),
+          ),
+        ],
       ],
     );
+  }
+
+  Future<void> _elegirArchivo(CampoDinamico campo) async {
+    final exts = _extensionesDe(campo.tiposAceptados);
+    final result = await FilePicker.platform.pickFiles(
+      type: exts.isEmpty ? FileType.any : FileType.custom,
+      allowedExtensions: exts.isEmpty ? null : exts,
+    );
+    if (result == null || result.files.isEmpty) return;
+    final f = result.files.first;
+    if (f.path == null) return;
+
+    setState(() {
+      _archivos[campo.nombre] = ArchivoParaSubir(
+        campoFormulario: campo.nombre,
+        path: f.path!,
+        nombre: f.name,
+        tamanoBytes: f.size,
+        extension: (f.extension ?? '').toLowerCase(),
+      );
+      _erroresLocales[campo.nombre] = null;
+    });
+  }
+
+  /// Convierte `tiposAceptados` (MIME como "application/pdf" o extensiones como
+  /// "pdf") a una lista de extensiones para file_picker. Si hay comodines o algo
+  /// desconocido, devuelve vacío → se permite cualquier archivo.
+  List<String> _extensionesDe(List<String> tipos) {
+    const mimeAExt = {
+      'jpeg': 'jpg',
+      'jpg': 'jpg',
+      'png': 'png',
+      'gif': 'gif',
+      'webp': 'webp',
+      'pdf': 'pdf',
+      'mp4': 'mp4',
+      'quicktime': 'mov',
+      'msword': 'doc',
+    };
+    final exts = <String>{};
+    for (final t in tipos) {
+      final lower = t.toLowerCase().trim();
+      if (lower.contains('*')) return const [];
+      if (lower.contains('/')) {
+        final sub = lower.split('/').last;
+        final ext = mimeAExt[sub];
+        if (ext == null) return const [];
+        exts.add(ext);
+      } else {
+        final limpio = lower.replaceAll('.', '');
+        if (RegExp(r'^[a-z0-9]+$').hasMatch(limpio)) exts.add(limpio);
+      }
+    }
+    return exts.toList();
   }
 }

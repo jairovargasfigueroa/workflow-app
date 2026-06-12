@@ -93,6 +93,22 @@ class AgenteTramitesService {
     }
   }
 
+  /// Sube un archivo del flujo del agente (reutiliza el endpoint del módulo
+  /// documental). Se llama al recibir el evento `subir_archivos`.
+  Future<void> subirArchivo({
+    required String solicitudId,
+    required String campoFormulario,
+    required String filePath,
+    required String fileName,
+  }) {
+    return _apiService.subirArchivo(
+      solicitudId: solicitudId,
+      campoFormulario: campoFormulario,
+      filePath: filePath,
+      fileName: fileName,
+    );
+  }
+
   /// Parsea un bloque SSE (una o varias líneas `data:`) a un [EventoSSE].
   /// Devuelve null si el bloque está vacío, es un comentario o no es JSON.
   EventoSSE? _parseBloque(String bloque) {

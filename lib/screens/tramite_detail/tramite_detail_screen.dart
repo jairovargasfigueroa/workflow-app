@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:open_filex/open_filex.dart';
 import 'package:provider/provider.dart';
+import 'package:tramites_app/config/theme.dart';
 import 'package:tramites_app/models/archivo_response.dart';
 import 'package:tramites_app/models/tramite.dart';
+import 'package:tramites_app/providers/conectividad_provider.dart';
 import 'package:tramites_app/providers/solicitudes_provider.dart';
 import 'package:tramites_app/widgets/status_badge.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 class TramiteDetailScreen extends StatefulWidget {
   final String id;
@@ -76,26 +78,29 @@ class _TramiteDetailScreenState extends State<TramiteDetailScreen> {
     if (solicitud == null) return const SizedBox.shrink();
 
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(AppSpacing.md),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _HeaderSolicitud(solicitud: solicitud),
           if (solicitud.respuestasSolicitante.isNotEmpty) ...[
-            const SizedBox(height: 24),
-            _SeccionRespuestas(
-              titulo: 'Información enviada',
-              respuestas: solicitud.respuestasSolicitante,
+            const SizedBox(height: AppSpacing.lg),
+            const _SeccionTitulo(
+              icono: Icons.assignment_outlined,
+              texto: 'Información enviada',
             ),
+            const SizedBox(height: AppSpacing.sm),
+            _SeccionRespuestas(respuestas: solicitud.respuestasSolicitante),
           ],
+          // Documentos: arriba del seguimiento.
           _buildArchivos(provider),
           if (solicitud.respuestasPorDepartamento.isNotEmpty) ...[
-            const SizedBox(height: 24),
-            Text(
-              'Seguimiento',
-              style: Theme.of(context).textTheme.titleLarge,
+            const SizedBox(height: AppSpacing.lg),
+            const _SeccionTitulo(
+              icono: Icons.timeline_outlined,
+              texto: 'Seguimiento',
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: AppSpacing.md),
             _TimelineDepartamentos(
               departamentos: solicitud.respuestasPorDepartamento,
             ),
@@ -121,57 +126,71 @@ class _TramiteDetailScreenState extends State<TramiteDetailScreen> {
     }
 
     final archivos = provider.archivos;
-    // Sin archivos y sin error → no mostramos nada (no hay docs o no hay permiso).
-    if (archivos.isEmpty && provider.errorArchivos == null) {
+    final offline = context.watch<ConectividadProvider>().offline;
+
+    if (archivos.isEmpty) {
+      // Offline → no mostramos error rojo (la lista puede no estar cacheada).
+      // Solo mostramos un error real si estamos online y falló (ej: permiso).
+      if (!offline && provider.errorArchivos != null) {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SizedBox(height: AppSpacing.lg),
+            const _SeccionTitulo(
+              icono: Icons.folder_outlined,
+              texto: 'Documentos',
+            ),
+            const SizedBox(height: AppSpacing.sm),
+            Text(
+              provider.errorArchivos!,
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
+          ],
+        );
+      }
       return const SizedBox.shrink();
     }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const SizedBox(height: 24),
-        Text('Documentos', style: Theme.of(context).textTheme.titleLarge),
-        const SizedBox(height: 12),
-        if (provider.errorArchivos != null)
-          Text(
-            provider.errorArchivos!,
-            style: TextStyle(color: Theme.of(context).colorScheme.error),
-          )
-        else
-          ...archivos.map((a) => _ArchivoTile(
-                archivo: a,
-                onVer: () => _abrirArchivo(a, attachment: false),
-                onDescargar: () => _abrirArchivo(a, attachment: true),
-              )),
+        const SizedBox(height: AppSpacing.lg),
+        const _SeccionTitulo(
+          icono: Icons.folder_outlined,
+          texto: 'Documentos',
+        ),
+        const SizedBox(height: AppSpacing.sm),
+        ...archivos.map((a) => _ArchivoTile(
+              archivo: a,
+              onAbrir: () => _abrirArchivo(a),
+            )),
       ],
     );
   }
 
-  Future<void> _abrirArchivo(
-    ArchivoResponse archivo, {
-    required bool attachment,
-  }) async {
+  Future<void> _abrirArchivo(ArchivoResponse archivo) async {
     final provider = context.read<SolicitudesProvider>();
+    final offline = context.read<ConectividadProvider>().offline;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(
+      const SnackBar(content: Text('Abriendo archivo…')),
+    );
     try {
-      final url = await provider.obtenerUrlDescarga(
-        archivo.id,
-        attachment: attachment,
-      );
-      final abierto = await launchUrl(
-        Uri.parse(url),
-        mode: LaunchMode.externalApplication,
-      );
-      if (!abierto && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No se pudo abrir el archivo.')),
+      // Descarga (la 1ª vez, con internet) y/o usa la copia local (offline).
+      final ruta = await provider.prepararArchivoLocal(archivo);
+      final resultado = await OpenFilex.open(ruta);
+      if (resultado.type != ResultType.done && mounted) {
+        messenger.showSnackBar(
+          SnackBar(content: Text('No se pudo abrir: ${resultado.message}')),
         );
       }
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
-        );
-      }
+      if (!mounted) return;
+      // Si está offline y el archivo no se descargó antes, mensaje amable.
+      final msg = offline
+          ? 'Necesitás internet para abrir este archivo por primera vez.'
+          : e.toString().replaceFirst('Exception: ', '');
+      messenger.showSnackBar(SnackBar(content: Text(msg)));
     }
   }
 }
@@ -182,13 +201,11 @@ class _TramiteDetailScreenState extends State<TramiteDetailScreen> {
 
 class _ArchivoTile extends StatelessWidget {
   final ArchivoResponse archivo;
-  final VoidCallback onVer;
-  final VoidCallback onDescargar;
+  final VoidCallback onAbrir;
 
   const _ArchivoTile({
     required this.archivo,
-    required this.onVer,
-    required this.onDescargar,
+    required this.onAbrir,
   });
 
   @override
@@ -234,14 +251,9 @@ class _ArchivoTile extends StatelessWidget {
               ),
             ),
             IconButton(
-              tooltip: 'Ver',
-              icon: const Icon(Icons.visibility_outlined),
-              onPressed: onVer,
-            ),
-            IconButton(
-              tooltip: 'Descargar',
-              icon: const Icon(Icons.download_outlined),
-              onPressed: onDescargar,
+              tooltip: 'Abrir',
+              icon: const Icon(Icons.open_in_new),
+              onPressed: onAbrir,
             ),
           ],
         ),
@@ -357,26 +369,40 @@ class _InfoFila extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
+// Título de sección reutilizable (icono + texto), coherente en toda la pantalla
+// ---------------------------------------------------------------------------
+
+class _SeccionTitulo extends StatelessWidget {
+  final IconData icono;
+  final String texto;
+
+  const _SeccionTitulo({required this.icono, required this.texto});
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Row(
+      children: [
+        Icon(icono, size: 18, color: colorScheme.primary),
+        const SizedBox(width: AppSpacing.sm),
+        Text(texto, style: Theme.of(context).textTheme.titleMedium),
+      ],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Respuestas del solicitante
 // ---------------------------------------------------------------------------
 
 class _SeccionRespuestas extends StatelessWidget {
-  final String titulo;
   final List<RespuestaSolicitante> respuestas;
 
-  const _SeccionRespuestas({
-    required this.titulo,
-    required this.respuestas,
-  });
+  const _SeccionRespuestas({required this.respuestas});
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(titulo, style: Theme.of(context).textTheme.titleMedium),
-        const SizedBox(height: 8),
-        Card(
+    return Card(
           margin: EdgeInsets.zero,
           child: Padding(
             padding: const EdgeInsets.all(16),
@@ -415,9 +441,7 @@ class _SeccionRespuestas extends StatelessWidget {
               }).toList(),
             ),
           ),
-        ),
-      ],
-    );
+        );
   }
 }
 
@@ -510,7 +534,7 @@ class _TimelineItem extends StatelessWidget {
                     )
                   else ...[
                     _Chip(
-                      label: depto.accion ?? 'Respondido',
+                      label: depto.accionEtiqueta ?? depto.accion ?? 'Respondido',
                       color: colorScheme.primaryContainer,
                       textColor: colorScheme.onPrimaryContainer,
                     ),

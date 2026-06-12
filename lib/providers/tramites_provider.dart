@@ -1,18 +1,49 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
+import 'package:tramites_app/data/local/file_storage_service.dart';
+import 'package:tramites_app/data/repositories/outbox_repository.dart';
+import 'package:tramites_app/data/repositories/solicitudes_repository.dart';
+import 'package:tramites_app/data/repositories/tramites_repository.dart';
+import 'package:tramites_app/data/sync/sync_manager.dart';
 import 'package:tramites_app/models/archivo_para_subir.dart';
 import 'package:tramites_app/models/documento_kit.dart';
 import 'package:tramites_app/models/tramite.dart';
 import 'package:tramites_app/services/api_service.dart';
+import 'package:uuid/uuid.dart';
 
+/// Estado de trámites/formularios. Offline-first: **lee de Drift** (vía repo).
+/// Crear una solicitud **encola** en el Outbox (funciona offline) y el
+/// SyncManager la sube cuando hay internet.
 class TramitesProvider extends ChangeNotifier {
-  final ApiService _apiService;
+  final TramitesRepository _repo;
+  final SolicitudesRepository _solicitudesRepo;
+  final OutboxRepository _outboxRepo;
+  final FileStorageService _fileStorage;
+  final SyncManager _sync;
+  final ApiService _api;
+  final _uuid = const Uuid();
 
-  TramitesProvider(this._apiService);
+  late final StreamSubscription _tramitesSub;
+
+  TramitesProvider(
+    this._repo,
+    this._solicitudesRepo,
+    this._outboxRepo,
+    this._fileStorage,
+    this._sync,
+    this._api,
+  ) {
+    _tramitesSub = _repo.watchTramites().listen((lista) {
+      _tramites = lista;
+      notifyListeners();
+    });
+  }
 
   List<TramiteDisponible> _tramites = [];
   FormularioTemplate? _formulario;
   List<DocumentoKit> _documentosKit = [];
-  bool _isLoadingTramites = false;
+  bool _sincronizandoTramites = false;
   bool _isLoadingFormulario = false;
   bool _isLoadingKit = false;
   bool _isSubmitting = false;
@@ -20,17 +51,12 @@ class TramitesProvider extends ChangeNotifier {
   String? _errorFormulario;
   String? _errorKit;
   String? _errorSubmit;
-  String? _estadoSubida;
-
-  /// solicitudId ya creado, para no recrear la solicitud si un reintento de
-  /// subida vuelve a entrar (evita solicitudes duplicadas).
-  String? _solicitudCreadaId;
 
   List<TramiteDisponible> get tramites =>
       _tramites.where((t) => t.activo).toList();
   FormularioTemplate? get formulario => _formulario;
   List<DocumentoKit> get documentosKit => _documentosKit;
-  bool get isLoadingTramites => _isLoadingTramites;
+  bool get isLoadingTramites => _sincronizandoTramites && _tramites.isEmpty;
   bool get isLoadingFormulario => _isLoadingFormulario;
   bool get isLoadingKit => _isLoadingKit;
   bool get isSubmitting => _isSubmitting;
@@ -38,35 +64,41 @@ class TramitesProvider extends ChangeNotifier {
   String? get errorFormulario => _errorFormulario;
   String? get errorKit => _errorKit;
   String? get errorSubmit => _errorSubmit;
-  String? get estadoSubida => _estadoSubida;
+
+  @override
+  void dispose() {
+    _tramitesSub.cancel();
+    super.dispose();
+  }
 
   Future<void> loadTramites() async {
-    _isLoadingTramites = true;
     _error = null;
+    _sincronizandoTramites = true;
     notifyListeners();
-    try {
-      _tramites = await _apiService.getTramites();
-      debugPrint('[TRAMITES] Cargados: ${_tramites.length}');
-    } catch (e) {
-      _error = e.toString().replaceFirst('Exception: ', '');
-      debugPrint('[TRAMITES] Error: $_error');
-    } finally {
-      _isLoadingTramites = false;
-      notifyListeners();
+    final ok = await _sync.sincronizarTramites();
+    _sincronizandoTramites = false;
+    if (!ok && _tramites.isEmpty) {
+      _error = 'No se pudieron cargar los trámites. Revisá tu conexión.';
     }
+    notifyListeners();
   }
 
   Future<void> loadFormulario(String formularioId) async {
     _isLoadingFormulario = true;
     _errorFormulario = null;
-    _formulario = null;
     notifyListeners();
+
+    _formulario = await _repo.getFormulario(formularioId);
+    if (_formulario != null) notifyListeners();
+
     try {
-      _formulario = await _apiService.getFormulario(formularioId);
-      debugPrint('[TRAMITES] Formulario cargado: ${_formulario?.id}');
+      final fresco = await _api.getFormulario(formularioId);
+      await _repo.guardarFormulario(fresco);
+      _formulario = fresco;
     } catch (e) {
-      _errorFormulario = e.toString().replaceFirst('Exception: ', '');
-      debugPrint('[TRAMITES] Error formulario: $_errorFormulario');
+      if (_formulario == null) {
+        _errorFormulario = e.toString().replaceFirst('Exception: ', '');
+      }
     } finally {
       _isLoadingFormulario = false;
       notifyListeners();
@@ -78,111 +110,76 @@ class TramitesProvider extends ChangeNotifier {
     _errorKit = null;
     _documentosKit = [];
     notifyListeners();
+
+    _documentosKit = await _repo.getKit(tramiteId);
+    if (_documentosKit.isNotEmpty) notifyListeners();
+
     try {
-      _documentosKit = await _apiService.getDocumentosKit(tramiteId);
-      debugPrint('[TRAMITES] Kit cargado: ${_documentosKit.length} documentos');
+      final fresco = await _api.getDocumentosKit(tramiteId);
+      await _repo.guardarKit(tramiteId, fresco);
+      _documentosKit = fresco;
     } catch (e) {
-      _errorKit = e.toString().replaceFirst('Exception: ', '');
-      debugPrint('[TRAMITES] Error kit: $_errorKit');
+      if (_documentosKit.isEmpty) {
+        _errorKit = e.toString().replaceFirst('Exception: ', '');
+      }
     } finally {
       _isLoadingKit = false;
       notifyListeners();
     }
   }
 
-  Future<SolicitudDetalle?> createSolicitud({
+  /// Crea una solicitud: la **encola** en el Outbox (funciona online y offline).
+  /// Guarda los archivos en disco + una solicitud local "pendiente" y dispara
+  /// el sync (best-effort). Devuelve true si quedó encolada.
+  Future<bool> crearSolicitudConKit({
     required String tramiteId,
-    required List<Map<String, String>> respuestas,
-  }) async {
-    _isSubmitting = true;
-    _errorSubmit = null;
-    notifyListeners();
-    try {
-      final result = await _apiService.createSolicitud(
-        tramiteId: tramiteId,
-        respuestasSolicitante: respuestas,
-      );
-      debugPrint('[TRAMITES] Solicitud creada: ${result.id}');
-      return result;
-    } catch (e) {
-      _errorSubmit = e.toString().replaceFirst('Exception: ', '');
-      debugPrint('[TRAMITES] Error creando solicitud: $_errorSubmit');
-      return null;
-    } finally {
-      _isSubmitting = false;
-      notifyListeners();
-    }
-  }
-
-  /// Crea la solicitud y sube los archivos del kit.
-  ///
-  /// Devuelve:
-  /// - `null` si falló la creación (no se subió nada).
-  /// - `[]` si se creó y se subieron todos los archivos.
-  /// - `[campos...]` con los documentos que NO se pudieron subir (la solicitud
-  ///   sí se creó). En un reintardo, no se vuelve a crear (usa `_solicitudCreadaId`).
-  Future<List<String>?> crearSolicitudConKit({
-    required String tramiteId,
+    String? tramiteNombre,
     required List<Map<String, String>> respuestas,
     required List<ArchivoParaSubir> archivos,
   }) async {
     _isSubmitting = true;
     _errorSubmit = null;
-    _estadoSubida = null;
     notifyListeners();
-
     try {
-      // 1) Crear (solo si no se creó ya en un intento anterior).
-      if (_solicitudCreadaId == null) {
-        _estadoSubida = 'Creando solicitud…';
-        notifyListeners();
-        final solicitud = await _apiService.createSolicitud(
-          tramiteId: tramiteId,
-          respuestasSolicitante: respuestas,
-        );
-        _solicitudCreadaId = solicitud.id;
-        debugPrint('[TRAMITES] Solicitud creada: ${solicitud.id}');
+      final clientId = _uuid.v4();
+
+      // 1) Copiar archivos a carpeta persistente (sobreviven hasta subir).
+      //    Cada archivo lleva su PROPIO clientId (operación distinta del crear
+      //    y de los demás archivos) → el back deduplica cada uno por separado.
+      final archivosLocales = <Map<String, dynamic>>[];
+      for (final a in archivos) {
+        final ruta = await _fileStorage.guardarParaSubir(clientId, a);
+        archivosLocales.add({
+          'campo': a.campoFormulario,
+          'pathLocal': ruta,
+          'nombre': a.nombre,
+          'clientId': _uuid.v4(),
+        });
       }
 
-      // 2) Subir cada archivo; juntar los que fallen.
-      final fallidos = <String>[];
-      for (var i = 0; i < archivos.length; i++) {
-        final a = archivos[i];
-        try {
-          await _apiService.subirArchivo(
-            solicitudId: _solicitudCreadaId!,
-            campoFormulario: a.campoFormulario,
-            filePath: a.path,
-            fileName: a.nombre,
-            onSendProgress: (enviado, total) {
-              if (total > 0) {
-                final pct = (enviado / total * 100).clamp(0, 100).toStringAsFixed(0);
-                _estadoSubida =
-                    'Subiendo ${a.campoFormulario} (${i + 1}/${archivos.length})… $pct%';
-                notifyListeners();
-              }
-            },
-          );
-        } catch (e) {
-          debugPrint('[TRAMITES] Falló subir ${a.campoFormulario}: $e');
-          fallidos.add(a.campoFormulario);
-        }
-      }
+      // 2) Solicitud local "pendiente" (aparece en la lista con badge).
+      await _solicitudesRepo.insertarPendiente(
+        clientId: clientId,
+        tramiteId: tramiteId,
+        tramiteNombre: tramiteNombre,
+      );
 
-      if (fallidos.isEmpty) {
-        _solicitudCreadaId = null; // listo, limpiamos para una próxima solicitud
-        return [];
-      } else {
-        _errorSubmit =
-            'La solicitud se creó, pero no se pudieron subir: ${fallidos.join(', ')}. Tocá Enviar para reintentar.';
-        return fallidos;
-      }
+      // 3) Encolar en el Outbox.
+      await _outboxRepo.encolarCrearSolicitud(
+        clientId: clientId,
+        tramiteId: tramiteId,
+        respuestas: respuestas,
+        archivos: archivosLocales,
+      );
+
+      // 4) Intentar subir ya (best-effort; si está offline, queda en la cola).
+      _sync.procesarOutbox();
+      return true;
     } catch (e) {
       _errorSubmit = e.toString().replaceFirst('Exception: ', '');
-      debugPrint('[TRAMITES] Error en crearSolicitudConKit: $_errorSubmit');
-      return null;
+      debugPrint('[TRAMITES] Error encolando solicitud: $_errorSubmit');
+      return false;
     } finally {
-      _estadoSubida = null;
       _isSubmitting = false;
       notifyListeners();
     }

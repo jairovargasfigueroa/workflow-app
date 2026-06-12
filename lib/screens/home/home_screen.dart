@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
+import 'package:tramites_app/config/theme.dart';
 import 'package:tramites_app/models/tramite.dart';
 import 'package:tramites_app/providers/tramites_provider.dart';
 
@@ -45,8 +46,9 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.error_outline, size: 48, color: Colors.red),
-              const SizedBox(height: 16),
+              Icon(Icons.error_outline,
+                  size: 48, color: Theme.of(context).colorScheme.error),
+              const SizedBox(height: AppSpacing.md),
               Text(
                 provider.error!,
                 textAlign: TextAlign.center,
@@ -66,15 +68,19 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     if (provider.tramites.isEmpty) {
-      return const Center(
+      final cs = Theme.of(context).colorScheme;
+      return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.inbox_outlined, size: 64, color: Colors.grey),
-            SizedBox(height: 16),
+            Icon(Icons.inbox_outlined,
+                size: 64, color: cs.onSurfaceVariant.withValues(alpha: 0.6)),
+            const SizedBox(height: AppSpacing.md),
             Text(
               'No hay trámites disponibles',
-              style: TextStyle(fontSize: 16, color: Colors.grey),
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    color: cs.onSurfaceVariant,
+                  ),
             ),
           ],
         ),
@@ -112,20 +118,42 @@ class _TramiteDisponibleCard extends StatelessWidget {
     final colorScheme = Theme.of(context).colorScheme;
 
     return Card(
-      margin: const EdgeInsets.only(bottom: 12),
+      margin: const EdgeInsets.only(bottom: AppSpacing.md),
       child: InkWell(
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(AppRadius.lg),
         onTap: () => _navegar(context),
         child: Padding(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(AppSpacing.md),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                tramite.nombre,
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: colorScheme.primaryContainer,
+                      borderRadius: BorderRadius.circular(AppRadius.md),
                     ),
+                    child: Icon(
+                      Icons.assignment_outlined,
+                      size: 22,
+                      color: colorScheme.onPrimaryContainer,
+                    ),
+                  ),
+                  const SizedBox(width: AppSpacing.sm + AppSpacing.xs),
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text(
+                        tramite.nombre,
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                    ),
+                  ),
+                ],
               ),
               if (tramite.descripcion != null &&
                   tramite.descripcion!.isNotEmpty) ...[

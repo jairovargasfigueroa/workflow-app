@@ -1,7 +1,7 @@
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_gemma/flutter_gemma.dart';
 import 'package:tramites_app/app.dart';
 import 'package:tramites_app/firebase_options.dart';
 
@@ -15,5 +15,7 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   FirebaseMessaging.onBackgroundMessage(_firebaseBackgroundHandler);
+  // Inicializa el motor del modelo local (no descarga nada; solo prepara el SDK).
+  await FlutterGemma.initialize();
   runApp(const App());
 }

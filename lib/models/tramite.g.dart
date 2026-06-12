@@ -33,6 +33,7 @@ RespuestaDepartamento _$RespuestaDepartamentoFromJson(
   funcionarioAsignadoNombre: json['funcionarioAsignadoNombre'] as String?,
   fechaAsignacion: _parseFecha(json['fechaAsignacion']),
   accion: json['accion'] as String?,
+  accionEtiqueta: json['accionEtiqueta'] as String?,
   comentario: json['comentario'] as String?,
   fechaEntrada: _parseFecha(json['fechaEntrada']),
   fechaRespuesta: _parseFecha(json['fechaRespuesta']),
@@ -56,6 +57,7 @@ Map<String, dynamic> _$RespuestaDepartamentoToJson(
   'funcionarioAsignadoNombre': instance.funcionarioAsignadoNombre,
   'fechaAsignacion': _fechaToJson(instance.fechaAsignacion),
   'accion': instance.accion,
+  'accionEtiqueta': instance.accionEtiqueta,
   'comentario': instance.comentario,
   'fechaEntrada': _fechaToJson(instance.fechaEntrada),
   'fechaRespuesta': _fechaToJson(instance.fechaRespuesta),
@@ -190,6 +192,11 @@ TramiteDisponible _$TramiteDisponibleFromJson(Map<String, dynamic> json) =>
               ?.map((e) => e as String)
               .toList() ??
           [],
+      etiquetas:
+          (json['etiquetas'] as List<dynamic>?)
+              ?.map((e) => e as String)
+              .toList() ??
+          [],
       activo: json['activo'] as bool,
       fechaCreacion: _parseFecha(json['fechaCreacion']),
     );
@@ -202,6 +209,7 @@ Map<String, dynamic> _$TramiteDisponibleToJson(TramiteDisponible instance) =>
       'formularioSolicitanteId': instance.formularioSolicitanteId,
       'flujoTrabajoId': instance.flujoTrabajoId,
       'requisitos': instance.requisitos,
+      'etiquetas': instance.etiquetas,
       'activo': instance.activo,
       'fechaCreacion': _fechaToJson(instance.fechaCreacion),
     };

@@ -31,4 +31,11 @@ class DocumentoKit {
       inmutablePostCierre: json['inmutablePostCierre'] == true,
     );
   }
+
+  Map<String, dynamic> toJson() => {
+        'nombre': nombre,
+        'formatosAceptados': formatosAceptados,
+        'obligatorio': obligatorio,
+        'inmutablePostCierre': inmutablePostCierre,
+      };
 }

@@ -1,10 +1,15 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import 'package:tramites_app/models/mensaje_chat.dart';
+import 'package:tramites_app/models/tramite.dart';
 import 'package:tramites_app/providers/agente_tramites_provider.dart';
+import 'package:tramites_app/providers/conectividad_provider.dart';
 import 'package:tramites_app/widgets/boton_microfono.dart';
 import 'package:tramites_app/widgets/burbuja_mensaje.dart';
 import 'package:tramites_app/widgets/burbuja_opciones.dart';
+import 'package:tramites_app/widgets/burbuja_pensando.dart';
+import 'package:tramites_app/widgets/burbuja_sugerencias.dart';
 import 'package:tramites_app/widgets/card_resumen.dart';
 import 'package:tramites_app/widgets/formulario_dinamico.dart';
 
@@ -26,6 +31,18 @@ class _ChatAgenteScreenState extends State<ChatAgenteScreen> {
   bool _escuchando = false;
 
   @override
+  void initState() {
+    super.initState();
+    // Si entramos offline, precargamos el modelo local (oculta la 1ª carga).
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (context.read<ConectividadProvider>().offline) {
+        context.read<AgenteTramitesProvider>().prepararAsistenteOffline();
+      }
+    });
+  }
+
+  @override
   void dispose() {
     _inputController.dispose();
     _scrollController.dispose();
@@ -36,9 +53,33 @@ class _ChatAgenteScreenState extends State<ChatAgenteScreen> {
     final texto = _inputController.text;
     if (texto.trim().isEmpty) return;
     _inputController.clear();
-    context.read<AgenteTramitesProvider>().enviar(texto);
+    final provider = context.read<AgenteTramitesProvider>();
+    // Online → agente IA (nube); offline → LLM local (on-device).
+    if (context.read<ConectividadProvider>().offline) {
+      provider.responderOffline(texto);
+    } else {
+      provider.enviar(texto);
+    }
     _irAlFinal();
   }
+
+  /// El usuario eligió un trámite sugerido (offline) → va al formulario.
+  void _irAlTramite(TramiteDisponible tramite) {
+    if (tramite.formularioSolicitanteId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('Este trámite no tiene formulario disponible.')),
+      );
+      return;
+    }
+    final nombre = Uri.encodeComponent(tramite.nombre);
+    final formularioId = Uri.encodeComponent(tramite.formularioSolicitanteId!);
+    context.go(
+      '/tramites/${tramite.id}/formulario?formularioId=$formularioId&nombre=$nombre',
+    );
+  }
+
+  void _verTodosLosTramites() => context.go('/tramites');
 
   void _irAlFinal() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -54,6 +95,7 @@ class _ChatAgenteScreenState extends State<ChatAgenteScreen> {
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<AgenteTramitesProvider>();
+    final offline = context.watch<ConectividadProvider>().offline;
 
     // Auto-scroll y SnackBar de error fuera del árbol de build.
     _irAlFinal();
@@ -90,10 +132,12 @@ class _ChatAgenteScreenState extends State<ChatAgenteScreen> {
                 ? const _Bienvenida()
                 : _buildLista(provider),
           ),
-          if (_escuchando) const _BannerEscuchando(),
+          if (offline) const _AvisoAgenteOffline(),
+          if (_escuchando && !offline) const _BannerEscuchando(),
           _BarraEntrada(
             controller: _inputController,
             enviando: provider.enviando,
+            offline: offline,
             onEnviar: _enviar,
             onEscuchando: (v) => setState(() => _escuchando = v),
           ),
@@ -142,7 +186,18 @@ class _ChatAgenteScreenState extends State<ChatAgenteScreen> {
           onConfirmar: () => provider.confirmarResumen(mensaje),
           onModificar: () => provider.modificarResumen(mensaje),
         );
+      case TipoMensaje.sugerencias:
+        return BurbujaSugerencias(
+          mensaje: mensaje,
+          onElegir: _irAlTramite,
+          onVerTodos: _verTodosLosTramites,
+        );
       case TipoMensaje.texto:
+        // Burbuja vacía del agente = está pensando → puntitos animados.
+        if (!mensaje.esUsuario && mensaje.contenido.trim().isEmpty) {
+          return const BurbujaPensando();
+        }
+        return BurbujaMensaje(mensaje: mensaje);
       case TipoMensaje.error:
       case TipoMensaje.sistema:
         return BurbujaMensaje(mensaje: mensaje);
@@ -189,12 +244,14 @@ class _Bienvenida extends StatelessWidget {
 class _BarraEntrada extends StatelessWidget {
   final TextEditingController controller;
   final bool enviando;
+  final bool offline;
   final VoidCallback onEnviar;
   final ValueChanged<bool> onEscuchando;
 
   const _BarraEntrada({
     required this.controller,
     required this.enviando,
+    required this.offline,
     required this.onEnviar,
     required this.onEscuchando,
   });
@@ -202,6 +259,8 @@ class _BarraEntrada extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    // Offline el input SÍ funciona: va al buscador local de trámites.
+    final bloqueado = enviando;
     return SafeArea(
       top: false,
       child: Container(
@@ -218,20 +277,22 @@ class _BarraEntrada extends StatelessWidget {
             // Micrófono: dictado por voz (entrada primaria).
             BotonMicrofono(
               controller: controller,
-              habilitado: !enviando,
+              habilitado: !bloqueado,
               onEscuchandoCambio: onEscuchando,
             ),
             const SizedBox(width: 8),
             Expanded(
               child: TextField(
                 controller: controller,
-                enabled: !enviando,
+                enabled: !bloqueado,
                 minLines: 1,
                 maxLines: 5,
                 textInputAction: TextInputAction.send,
                 onSubmitted: (_) => onEnviar(),
                 decoration: InputDecoration(
-                  hintText: 'Escribí tu mensaje…',
+                  hintText: offline
+                      ? 'Contame qué necesitás…'
+                      : 'Escribí tu mensaje…',
                   filled: true,
                   fillColor: colorScheme.surfaceContainerHighest,
                   contentPadding:
@@ -255,10 +316,40 @@ class _BarraEntrada extends StatelessWidget {
                   )
                 : IconButton.filled(
                     icon: const Icon(Icons.send),
-                    onPressed: onEnviar,
+                    onPressed: bloqueado ? null : onEnviar,
                   ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Aviso dentro del chat cuando no hay internet (el agente usa Gemini en la nube).
+class _AvisoAgenteOffline extends StatelessWidget {
+  const _AvisoAgenteOffline();
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Container(
+      width: double.infinity,
+      color: colorScheme.surfaceContainerHighest,
+      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+      child: Row(
+        children: [
+          Icon(Icons.cloud_off, size: 16, color: colorScheme.onSurfaceVariant),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Sin conexión: estás hablando con el asistente local de tu dispositivo. Puede tardar unos segundos en responder.',
+              style: TextStyle(
+                color: colorScheme.onSurfaceVariant,
+                fontSize: 13,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

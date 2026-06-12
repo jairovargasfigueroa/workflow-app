@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:tramites_app/services/api_service.dart';
@@ -8,7 +10,15 @@ class AuthProvider extends ChangeNotifier {
   final ApiService _apiService;
   final _storage = const FlutterSecureStorage();
 
-  AuthProvider(this._authService, this._apiService);
+  AuthProvider(this._authService, this._apiService) {
+    // Si el server rechaza por 401 (token expirado/ inválido), cerrar sesión.
+    _apiService.onUnauthorized = () {
+      if (_isLoggedIn) {
+        debugPrint('[AUTH] 401 del server → cerrando sesión');
+        logout();
+      }
+    };
+  }
 
   bool _isLoggedIn = false;
   String? _userId;
@@ -35,6 +45,13 @@ class AuthProvider extends ChangeNotifier {
     final rol = await _storage.read(key: 'user_rol');
 
     if (token != null && userId != null) {
+      // No restaurar una sesión con token vencido: limpiar y quedar en login.
+      if (_tokenVencido(token)) {
+        debugPrint('[AUTH] Token guardado vencido → limpiando sesión');
+        await _storage.deleteAll();
+        _apiService.setAuthToken(null);
+        return;
+      }
       _apiService.setAuthToken(token);
       _isLoggedIn = true;
       _userId = userId;
@@ -42,6 +59,33 @@ class AuthProvider extends ChangeNotifier {
       _nombre = nombre;
       _rol = rol;
       notifyListeners();
+    }
+  }
+
+  /// Decodifica el `exp` del JWT y dice si ya venció.
+  /// Si el token no es un JWT decodificable o no trae `exp`, no bloquea
+  /// (devuelve false) para no romper sesiones válidas.
+  bool _tokenVencido(String token) {
+    try {
+      final parts = token.split('.');
+      if (parts.length != 3) return false;
+      var payload = parts[1].replaceAll('-', '+').replaceAll('_', '/');
+      switch (payload.length % 4) {
+        case 2:
+          payload += '==';
+          break;
+        case 3:
+          payload += '=';
+          break;
+      }
+      final json =
+          jsonDecode(utf8.decode(base64.decode(payload))) as Map<String, dynamic>;
+      final exp = json['exp'];
+      if (exp is! int) return false;
+      final vencimiento = DateTime.fromMillisecondsSinceEpoch(exp * 1000);
+      return DateTime.now().isAfter(vencimiento);
+    } catch (_) {
+      return false;
     }
   }
 

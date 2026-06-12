@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import 'package:tramites_app/models/archivo_para_subir.dart';
 import 'package:tramites_app/models/documento_kit.dart';
 import 'package:tramites_app/models/tramite.dart';
+import 'package:tramites_app/providers/conectividad_provider.dart';
 import 'package:tramites_app/providers/tramites_provider.dart';
 
 class SolicitudFormScreen extends StatefulWidget {
@@ -95,6 +96,8 @@ class _SolicitudFormScreenState extends State<SolicitudFormScreen> {
     final formulario = provider.formulario;
     if (formulario == null) return const SizedBox.shrink();
 
+    final offline = context.watch<ConectividadProvider>().offline;
+
     return Form(
       key: _formKey,
       child: ListView(
@@ -135,27 +138,42 @@ class _SolicitudFormScreenState extends State<SolicitudFormScreen> {
             ),
             const SizedBox(height: 16),
           ],
+          if (offline) ...[
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.cloud_off,
+                      size: 18,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Sin conexión: se guardará y se enviará automáticamente al reconectar.',
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
           FilledButton(
             onPressed: provider.isSubmitting ? null : _enviar,
             child: provider.isSubmitting
-                ? Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const SizedBox(
-                        height: 18,
-                        width: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                      const SizedBox(width: 10),
-                      Flexible(
-                        child: Text(
-                          provider.estadoSubida ?? 'Enviando…',
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                    ],
+                ? const SizedBox(
+                    height: 18,
+                    width: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
                   )
-                : const Text('Enviar solicitud'),
+                : Text(offline ? 'Guardar (se enviará luego)' : 'Enviar solicitud'),
           ),
           const SizedBox(height: 24),
         ],
@@ -208,6 +226,7 @@ class _SolicitudFormScreenState extends State<SolicitudFormScreen> {
     }
     setState(() => _errorDocs = null);
 
+    final offline = context.read<ConectividadProvider>().offline;
     final respuestas = formulario.campos
         .map((c) => {
               'nombreCampo': c.nombre,
@@ -215,21 +234,31 @@ class _SolicitudFormScreenState extends State<SolicitudFormScreen> {
             })
         .toList();
 
-    final fallidos = await provider.crearSolicitudConKit(
+    // Encola (funciona online y offline); el sync la sube enseguida si hay red.
+    final ok = await provider.crearSolicitudConKit(
       tramiteId: widget.tramiteId,
+      tramiteNombre: widget.tramiteNombre,
       respuestas: respuestas,
       archivos: _archivos.values.toList(),
     );
 
     if (!mounted) return;
-    if (fallidos != null && fallidos.isEmpty) {
-      // Creada y todo subido.
-      context.go('/solicitudes');
-    } else if (fallidos != null && fallidos.isNotEmpty) {
-      // Dejar solo los que fallaron, para reintentar la subida.
-      setState(() => _archivos.removeWhere((k, v) => !fallidos.contains(k)));
+    if (ok) {
+      final router = GoRouter.of(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            offline
+                ? 'Sin conexión: se guardó y se enviará al reconectar.'
+                : 'Enviando tu solicitud…',
+          ),
+        ),
+      );
+      // Sacar el formulario de la pila de Trámites (sino queda al volver a esa
+      // pestaña) y cambiar a Mis solicitudes.
+      if (router.canPop()) router.pop();
+      router.go('/solicitudes');
     }
-    // fallidos == null → falló la creación (se muestra provider.errorSubmit).
   }
 
   /// Sección "Documentos requeridos" (kit del trámite). Por ahora solo muestra
@@ -265,7 +294,7 @@ class _SolicitudFormScreenState extends State<SolicitudFormScreen> {
         ),
         const SizedBox(height: 4),
         Text(
-          'Vas a necesitar subir estos documentos (la subida se habilita en el siguiente paso).',
+          'Adjuntá los documentos requeridos para este trámite.',
           style: Theme.of(context)
               .textTheme
               .bodySmall
@@ -478,7 +507,6 @@ class _TextInputField extends StatelessWidget {
           tipo == TipoCampo.number ? TextInputType.number : TextInputType.text,
       decoration: InputDecoration(
         labelText: requerido ? '$etiqueta *' : etiqueta,
-        border: const OutlineInputBorder(),
       ),
       validator: requerido
           ? (v) =>
@@ -508,10 +536,9 @@ class _SelectField extends StatelessWidget {
   Widget build(BuildContext context) {
     final current = opciones.contains(valor) ? valor : null;
     return DropdownButtonFormField<String>(
-      value: current,
+      initialValue: current,
       decoration: InputDecoration(
         labelText: requerido ? '$etiqueta *' : etiqueta,
-        border: const OutlineInputBorder(),
       ),
       items: opciones
           .map((o) => DropdownMenuItem(value: o, child: Text(o)))
@@ -587,7 +614,6 @@ class _DateFieldState extends State<_DateField> {
       readOnly: true,
       decoration: InputDecoration(
         labelText: widget.requerido ? '${widget.etiqueta} *' : widget.etiqueta,
-        border: const OutlineInputBorder(),
         suffixIcon: const Icon(Icons.calendar_today),
       ),
       validator: widget.requerido

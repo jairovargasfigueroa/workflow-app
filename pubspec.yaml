@@ -67,6 +67,18 @@ dependencies:
   url_launcher: ^6.3.0        # abrir presigned URLs (ver/descargar)
   http_parser: ^4.0.2         # MediaType (content-type real al subir)
 
+  # Offline-first (Off-1): base de datos local SQLite
+  drift: ^2.20.0              # ORM SQLite tipado + streams reactivos
+  sqlite3_flutter_libs: ^0.5.24  # binarios nativos de SQLite
+  path_provider: ^2.1.4       # ubicación del archivo .db
+
+  # Offline-first (Off-2): detección de red
+  connectivity_plus: ^6.0.5   # online/offline + banner
+
+  # Offline-first (Off-4): abrir archivos descargados con el visor nativo
+  open_filex: ^4.5.0          # abrir PDF/imagen/video offline
+  flutter_gemma: ^0.13.6
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -76,6 +88,7 @@ dev_dependencies:
   # Generación de código para modelos
   json_serializable: any
   build_runner: ^2.4.15
+  drift_dev: ^2.20.0          # generador de código de Drift
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

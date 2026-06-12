@@ -5,11 +5,31 @@ import 'package:tramites_app/models/archivo_response.dart';
 import 'package:tramites_app/models/documento_kit.dart';
 import 'package:tramites_app/models/tramite.dart';
 
+/// Error de la API con el código HTTP, para distinguir fallas **permanentes**
+/// (4xx — no sirve reintentar) de **transitorias** (sin red / 5xx — reintentar).
+class ApiException implements Exception {
+  final String mensaje;
+  final int? statusCode;
+
+  ApiException(this.mensaje, {this.statusCode});
+
+  /// true si es 4xx (cliente): no se va a arreglar reintentando.
+  bool get esPermanente =>
+      statusCode != null && statusCode! >= 400 && statusCode! < 500;
+
+  @override
+  String toString() => mensaje;
+}
+
 class ApiService {
   // static const String _baseUrl = 'https://api.workflow-tramites.site:8443';
   static const String _baseUrl = 'http://192.168.0.10:8080';
 
   late final Dio _dio;
+
+  /// Se llama cuando el server responde 401 (sesión inválida/expirada).
+  /// Lo setea AuthProvider para cerrar sesión automáticamente.
+  void Function()? onUnauthorized;
 
   ApiService() {
     _dio = Dio(
@@ -18,6 +38,19 @@ class ApiService {
         connectTimeout: const Duration(seconds: 15),
         receiveTimeout: const Duration(seconds: 15),
         headers: {'Content-Type': 'application/json'},
+      ),
+    );
+
+    _dio.interceptors.add(
+      InterceptorsWrapper(
+        onError: (e, handler) {
+          // 401 = no autenticado (token ausente/inválido/expirado) → cerrar sesión.
+          // 403 NO se toca: es "autenticado pero sin permiso" (ej: ver un archivo ajeno).
+          if (e.response?.statusCode == 401) {
+            onUnauthorized?.call();
+          }
+          handler.next(e);
+        },
       ),
     );
   }
@@ -90,22 +123,25 @@ class ApiService {
   Future<SolicitudDetalle> createSolicitud({
     required String tramiteId,
     required List<Map<String, String>> respuestasSolicitante,
+    String? clientId,
   }) async {
     try {
-      debugPrint('[API] POST /api/solicitudes');
+      debugPrint('[API] POST /api/solicitudes (clientId=$clientId)');
       final response = await _dio.post(
         '/api/solicitudes',
         data: {
           'tramiteId': tramiteId,
           'respuestasSolicitante': respuestasSolicitante,
           'adjuntos': [],
+          // Idempotencia: el back deduplica reintentos con este id.
+          if (clientId != null) 'clientId': clientId,
         },
       );
       return SolicitudDetalle.fromJson(response.data as Map<String, dynamic>);
     } on DioException catch (e) {
-      debugPrint('[API] DioException createSolicitud: ${e.type}');
-      debugPrint('[API] Response: ${e.response?.data}');
-      throw Exception(_mensajeError(e));
+      debugPrint('[API] DioException createSolicitud: ${e.type} '
+          '${e.response?.statusCode}');
+      throw ApiException(_mensajeError(e), statusCode: e.response?.statusCode);
     }
   }
 
@@ -120,7 +156,9 @@ class ApiService {
           )
           .toList();
     } on DioException catch (e) {
-      debugPrint('[API] DioException getMisSolicitudes: ${e.type}');
+      debugPrint('[API] DioException getMisSolicitudes: ${e.type} '
+          '${e.response?.statusCode}');
+      debugPrint('[API] Response: ${e.response?.data}');
       throw Exception(_mensajeError(e));
     }
   }
@@ -146,6 +184,7 @@ class ApiService {
     required String filePath,
     required String fileName,
     String? contentType,
+    String? clientId,
     ProgressCallback? onSendProgress,
   }) async {
     try {
@@ -164,6 +203,8 @@ class ApiService {
       await _dio.post(
         '/api/archivos/upload',
         data: formData,
+        // Idempotencia: el clientId va como query param (?clientId=).
+        queryParameters: clientId != null ? {'clientId': clientId} : null,
         // Tiempos amplios: los videos pueden tardar.
         options: Options(
           sendTimeout: const Duration(minutes: 10),
@@ -173,7 +214,7 @@ class ApiService {
       );
     } on DioException catch (e) {
       debugPrint('[API] DioException subirArchivo: ${e.type} ${e.response?.statusCode}');
-      throw Exception(_mensajeError(e));
+      throw ApiException(_mensajeError(e), statusCode: e.response?.statusCode);
     }
   }
 
@@ -183,6 +224,7 @@ class ApiService {
       debugPrint('[API] GET /api/archivos/solicitud/$solicitudId');
       final response = await _dio.get('/api/archivos/solicitud/$solicitudId');
       final data = response.data as List<dynamic>;
+      debugPrint('[API] archivos recibidos: ${data.length} → ${response.data}');
       return data
           .map((json) => ArchivoResponse.fromJson(json as Map<String, dynamic>))
           .toList();
@@ -213,6 +255,23 @@ class ApiService {
       if (e.response?.statusCode == 403) {
         throw Exception('No tenés permiso para ver este documento.');
       }
+      throw Exception(_mensajeError(e));
+    }
+  }
+
+  /// Descarga el binario de un archivo a una ruta local (para verlo offline).
+  /// Paso 1: obtener la presigned URL (con JWT). Paso 2: bajarla sin auth
+  /// (la presigned de S3 es pública; un Dio limpio evita mandar headers de más).
+  Future<void> descargarArchivoLocal({
+    required String archivoId,
+    required String destino,
+    bool attachment = true,
+  }) async {
+    final url = await getUrlDescarga(archivoId, attachment: attachment);
+    try {
+      await Dio().download(url, destino);
+    } on DioException catch (e) {
+      debugPrint('[API] DioException descargarArchivoLocal: ${e.type}');
       throw Exception(_mensajeError(e));
     }
   }
@@ -258,14 +317,66 @@ class ApiService {
     switch (e.type) {
       case DioExceptionType.connectionTimeout:
       case DioExceptionType.receiveTimeout:
+      case DioExceptionType.sendTimeout:
         return 'Tiempo de espera agotado. Verifica tu conexión.';
       case DioExceptionType.connectionError:
         return 'No se pudo conectar al servidor.';
       case DioExceptionType.badResponse:
-        final codigo = e.response?.statusCode;
-        return 'Error del servidor (código $codigo).';
+        return _mensajePorRespuesta(e.response?.statusCode, e.response?.data);
       default:
         return e.message ?? 'Error desconocido.';
     }
+  }
+
+  /// Construye un mensaje para el usuario según el código y el body del error.
+  /// Body posibles: {"error": "string"} o {"errores": [array de validación]}.
+  String _mensajePorRespuesta(int? codigo, dynamic data) {
+    // Validaciones (errores array) → son aptas para mostrar al usuario.
+    final errores = _erroresDeValidacion(data);
+    if (errores.isNotEmpty) return errores.join('\n');
+
+    // Mensaje del back (campo "error"). En 4xx suele ser claro y útil
+    // (permiso, negocio) → lo mostramos. En otros, se loguea y se usa genérico.
+    final detalle = _detalleError(data);
+    if (detalle.isNotEmpty) {
+      debugPrint('[API] Detalle error ($codigo): $detalle');
+      if (codigo != null && codigo >= 400 && codigo < 500) {
+        return detalle;
+      }
+    }
+
+    switch (codigo) {
+      case 401:
+        return 'Tu sesión expiró. Iniciá sesión de nuevo.';
+      case 403:
+        return 'No tenés permiso para esta acción.';
+      case 404:
+        return 'No se encontró el recurso solicitado.';
+      case 503:
+        return 'Servicio temporalmente no disponible. Reintentá en un momento.';
+      default:
+        return 'Error del servidor (código $codigo).';
+    }
+  }
+
+  List<String> _erroresDeValidacion(dynamic data) {
+    if (data is Map && data['errores'] is List) {
+      return (data['errores'] as List)
+          .map((e) => e.toString())
+          .where((s) => s.isNotEmpty)
+          .toList();
+    }
+    return const [];
+  }
+
+  String _detalleError(dynamic data) {
+    if (data is Map) {
+      final err = data['error'];
+      if (err is String) return err;
+      final errs = data['errores'];
+      if (errs is List) return errs.join(' | ');
+    }
+    if (data is String) return data;
+    return '';
   }
 }

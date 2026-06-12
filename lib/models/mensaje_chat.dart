@@ -1,4 +1,5 @@
 import 'package:tramites_app/models/contenido_interactivo.dart';
+import 'package:tramites_app/models/tramite.dart';
 
 /// Quién emite el mensaje en el chat.
 enum RolMensaje { usuario, agente }
@@ -11,6 +12,7 @@ enum TipoMensaje {
   opciones, // botones (mostrar_opciones)
   formulario, // formulario dinámico (pedir_campos_multiples)
   resumen, // card de confirmación (mostrar_resumen)
+  sugerencias, // trámites sugeridos por el buscador offline
 }
 
 /// Un elemento visible en la conversación del agente.
@@ -39,6 +41,9 @@ class MensajeChat {
   /// Nombres de archivos adjuntos a mostrar en el resumen (tipo == resumen).
   final List<String> archivos;
 
+  /// Trámites sugeridos por el buscador offline (tipo == sugerencias).
+  final List<TramiteDisponible> tramites;
+
   /// Errores por campo, aplicados al formulario tras `pedir_correcciones`.
   Map<String, String> errores;
 
@@ -55,6 +60,7 @@ class MensajeChat {
     this.campos = const [],
     this.items = const [],
     this.archivos = const [],
+    this.tramites = const [],
     Map<String, String>? errores,
     this.respondido = false,
   }) : errores = errores ?? <String, String>{};

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:tramites_app/config/theme.dart';
 
 import '../../providers/auth_provider.dart';
 
@@ -56,14 +57,42 @@ class _LoginScreenState extends State<LoginScreen> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    const Icon(Icons.lock_outline, size: 64),
-                    const SizedBox(height: 16),
+                    Center(
+                      child: Container(
+                        width: 88,
+                        height: 88,
+                        decoration: BoxDecoration(
+                          color: Theme.of(context).colorScheme.primaryContainer,
+                          borderRadius: BorderRadius.circular(AppRadius.lg + 4),
+                        ),
+                        child: Icon(
+                          Icons.assignment_turned_in_outlined,
+                          size: 44,
+                          color:
+                              Theme.of(context).colorScheme.onPrimaryContainer,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: AppSpacing.lg),
                     Text(
-                      'Iniciar sesión',
-                      style: Theme.of(context).textTheme.headlineMedium,
+                      'Trámites',
+                      style: Theme.of(context)
+                          .textTheme
+                          .headlineMedium
+                          ?.copyWith(fontWeight: FontWeight.w700),
                       textAlign: TextAlign.center,
                     ),
-                    const SizedBox(height: 32),
+                    const SizedBox(height: AppSpacing.xs),
+                    Text(
+                      'Iniciá sesión para gestionar tus trámites',
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant,
+                          ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: AppSpacing.xl),
                     TextFormField(
                       controller: _emailController,
                       keyboardType: TextInputType.emailAddress,
@@ -71,7 +100,6 @@ class _LoginScreenState extends State<LoginScreen> {
                       decoration: const InputDecoration(
                         labelText: 'Email',
                         prefixIcon: Icon(Icons.email_outlined),
-                        border: OutlineInputBorder(),
                       ),
                       validator: (value) {
                         final v = value?.trim() ?? '';
@@ -96,7 +124,6 @@ class _LoginScreenState extends State<LoginScreen> {
                           onPressed: () => setState(
                               () => _obscurePassword = !_obscurePassword),
                         ),
-                        border: const OutlineInputBorder(),
                       ),
                       validator: (value) {
                         if (value == null || value.isEmpty) {
@@ -122,10 +149,11 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                     ),
                     if (authProvider.error != null) ...[
-                      const SizedBox(height: 16),
+                      const SizedBox(height: AppSpacing.md),
                       Text(
                         authProvider.error!,
-                        style: const TextStyle(color: Colors.red),
+                        style: TextStyle(
+                            color: Theme.of(context).colorScheme.error),
                         textAlign: TextAlign.center,
                       ),
                     ],

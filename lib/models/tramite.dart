@@ -92,6 +92,11 @@ class RespuestaDepartamento {
   final DateTime? fechaAsignacion;
 
   final String? accion;
+
+  /// Etiqueta legible de la acción (ej: "Continuar"/"Aprobado"), derivada del
+  /// catálogo en el back. Para mostrar en el historial; `accion` queda intacto.
+  final String? accionEtiqueta;
+
   final String? comentario;
 
   @JsonKey(fromJson: _parseFecha, toJson: _fechaToJson)
@@ -114,6 +119,7 @@ class RespuestaDepartamento {
     this.funcionarioAsignadoNombre,
     this.fechaAsignacion,
     this.accion,
+    this.accionEtiqueta,
     this.comentario,
     this.fechaEntrada,
     this.fechaRespuesta,
@@ -250,6 +256,11 @@ class TramiteDisponible {
   @JsonKey(defaultValue: [])
   final List<String> requisitos;
 
+  /// Palabras clave para el asistente offline (matcheo). Si el back no las
+  /// manda, queda vacío y el buscador usa nombre/descripción/requisitos.
+  @JsonKey(defaultValue: [])
+  final List<String> etiquetas;
+
   final bool activo;
 
   @JsonKey(fromJson: _parseFecha, toJson: _fechaToJson)
@@ -262,6 +273,7 @@ class TramiteDisponible {
     this.formularioSolicitanteId,
     this.flujoTrabajoId,
     this.requisitos = const [],
+    this.etiquetas = const [],
     required this.activo,
     this.fechaCreacion,
   });
